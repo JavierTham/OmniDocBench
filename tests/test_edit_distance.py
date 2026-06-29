@@ -163,10 +163,11 @@ class TestHallucinationPenalty:
 # 4. Aggregation edge cases in call_Edit_dist
 # ===========================================================================
 class TestEditDistAggregationEdgeCases:
-    def test_both_empty_sample_leaves_metric_unset(self):
-        # CURRENT BEHAVIOR: when both gt and pred are empty the metric block is
-        # never populated (Edit_num stays unset) and the page contributes a
-        # NaN / divide-by-zero that pandas silently drops.
+    def test_both_empty_sample_is_scored_zero_and_excluded_from_aggregates(self):
+        # FIXED BEHAVIOR: a both-empty sample now gets Edit_num=0 / Edit_dist=0
+        # (so the column always exists) and is excluded from the length-weighted
+        # aggregates, leaving the surviving page's score untouched and emitting
+        # no divide-by-zero warning.
         samples = [
             {"img_id": "ok.jpg", "gt": "abcd", "pred": "abcd",
              "norm_gt": "abcd", "norm_pred": "abcd"},
@@ -174,27 +175,27 @@ class TestEditDistAggregationEdgeCases:
              "norm_gt": "", "norm_pred": ""},
         ]
         with warnings.catch_warnings():
-            warnings.simplefilter("ignore", RuntimeWarning)
+            warnings.simplefilter("error", RuntimeWarning)  # no 0/0 warning allowed
             _, res = call_Edit_dist(samples).evaluate()
 
         empty_sample = samples[1]
-        assert empty_sample.get("metric") is None        # never set
-        assert empty_sample.get("Edit_num") is None       # never set
+        assert empty_sample["metric"]["Edit_dist"] == 0.0
+        assert empty_sample["Edit_num"] == 0
         assert empty_sample["upper_len"] == 0
-        # the empty page is silently excluded; surviving avg is from ok.jpg only
+        # aggregate reflects only the real (ok.jpg) element
         assert res["Edit_dist"]["edit_whole"] == 0.0
 
-    def test_all_empty_samples_crash_with_keyerror(self):
-        # CURRENT BEHAVIOR (bug): if EVERY sample is both-empty, no sample ever
-        # gets an 'Edit_num' field, so the column is missing from the DataFrame
-        # and aggregation raises KeyError instead of returning a score. A page
-        # whose elements all normalize to empty therefore crashes the metric.
+    def test_all_empty_samples_return_nan_without_crashing(self):
+        # FIXED BEHAVIOR: a page whose elements all normalize to empty no longer
+        # raises KeyError('Edit_num'); it returns NaN sentinels instead.
         samples = [
             {"img_id": "empty.jpg", "gt": "", "pred": "",
              "norm_gt": "", "norm_pred": ""},
         ]
-        with pytest.raises(KeyError, match="Edit_num"):
-            call_Edit_dist(samples).evaluate()
+        _, res = call_Edit_dist(samples).evaluate()
+        assert res["Edit_dist"]["edit_whole"] == "NaN"
+        assert res["Edit_dist"]["ALL_page_avg"] == "NaN"
+        assert res["Edit_dist"]["edit_sample_avg"] == "NaN"
 
 
 if __name__ == "__main__":

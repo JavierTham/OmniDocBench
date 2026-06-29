@@ -371,27 +371,40 @@ class call_Edit_dist():
             pred = sample['norm_pred'] if sample.get('norm_pred') else sample['pred']
             upper_len = max(len(pred), len(gt))
             sample['upper_len'] = upper_len
-            if len(pred) > 0 or len(gt) > 0:
-                edit_dist = Levenshtein.distance(pred, gt)
-                if not sample.get('metric'):
-                    sample['metric'] = {}
-                sample['metric']['Edit_dist'] = edit_dist / upper_len
-                sample['Edit_num'] = edit_dist
+            # Always populate Edit_num/metric (0 when both sides are empty) so the
+            # 'Edit_num' column always exists. Previously a sample whose gt and
+            # pred both normalized to empty left Edit_num unset; a page made up
+            # entirely of such samples then raised KeyError('Edit_num') below.
+            edit_dist = Levenshtein.distance(pred, gt) if upper_len > 0 else 0
+            if not sample.get('metric'):
+                sample['metric'] = {}
+            sample['metric']['Edit_dist'] = (edit_dist / upper_len) if upper_len > 0 else 0.0
+            sample['Edit_num'] = edit_dist
 
         saved_samples = _as_sample_list(samples)
         if not saved_samples:
             return samples, {'Edit_dist': {'ALL_page_avg': 'NaN'}}
 
         df = pd.DataFrame(saved_samples)
-        up_total_avg = df.groupby("image_name").apply(lambda x: x['Edit_num'].sum() / x['upper_len'].sum())
-        all_total_avg = df['Edit_num'].sum() / df['upper_len'].sum()
+        # Both-empty elements carry no signal; excluding them from the
+        # length-weighted aggregates keeps the previous numbers for normal pages
+        # (those rows used to contribute 0/0) while avoiding divide-by-zero.
+        scored = df[df['upper_len'] > 0]
+        if scored.empty:
+            with open(f'./result/{save_name}_per_page_edit.json', 'w', encoding='utf-8') as f:
+                json.dump({}, f, indent=4, ensure_ascii=False)
+            return samples, {'Edit_dist': {'ALL_page_avg': 'NaN', 'edit_whole': 'NaN', 'edit_sample_avg': 'NaN'}}
+
+        up_total_avg = scored.groupby("image_name").apply(lambda x: x['Edit_num'].sum() / x['upper_len'].sum())
+        all_total_avg = scored['Edit_num'].sum() / scored['upper_len'].sum()
         per_img_score = up_total_avg.to_dict()
         with open(f'./result/{save_name}_per_page_edit.json', 'w', encoding='utf-8') as f:
             json.dump(per_img_score, f, indent=4, ensure_ascii=False)
 
         edit_whole = all_total_avg
-        df['ratio'] = df['Edit_num'] / df['upper_len']
-        edit_sample_avg = df['ratio'].mean()
+        scored = scored.copy()
+        scored['ratio'] = scored['Edit_num'] / scored['upper_len']
+        edit_sample_avg = scored['ratio'].mean()
         return samples, {'Edit_dist': {'ALL_page_avg': up_total_avg.mean(), 'edit_whole': edit_whole, 'edit_sample_avg': edit_sample_avg}}
 
 
