@@ -23,6 +23,10 @@ end2end_eval:
     spurious_pred:
       metric:
       - Spurious_pred
+    # Diagnostic only: fraction of predicted tables matching no GT table.
+    spurious_table:
+      metric:
+      - Spurious_pred
   dataset:
     dataset_name: end2end_dataset
     ground_truth:

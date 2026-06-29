@@ -291,6 +291,34 @@ class End2EndDataset():
             'gt_attribute': [{}],
             'spurious_chars': spurious_chars,
             'pred_chars': pred_chars,
+            # unit-neutral fields consumed by call_Spurious_pred (here: characters)
+            'spurious_amount': spurious_chars,
+            'total_amount': pred_chars,
+        }
+
+    def _build_spurious_table_record(self, pred_table_count, matched_table_count, img_name):
+        """Per-page spurious-table diagnostic.
+
+        Predicted tables that matched no GT table are extra / hallucinated. We
+        report the share of predicted tables that were spurious (count-based,
+        the natural unit for discrete tables). Diagnostic only — does not feed
+        TEDS / Edit_dist / CDM.
+        """
+        if pred_table_count <= 0:
+            return {}
+        spurious_tables = max(0, pred_table_count - matched_table_count)
+        return {
+            'img_id': img_name,
+            'gt': '',
+            'norm_gt': '',
+            'pred': '',
+            'norm_pred': '',
+            'gt_attribute': [{}],
+            'spurious_tables': spurious_tables,
+            'pred_tables': pred_table_count,
+            # unit-neutral fields consumed by call_Spurious_pred (here: table counts)
+            'spurious_amount': spurious_tables,
+            'total_amount': pred_table_count,
         }
 
     # 为公式匹配结果添加 img_id 信息。
@@ -2115,13 +2143,16 @@ class End2EndDataset():
         latex_table_match = []
         order_match = []
         spurious_pred_match = []
+        spurious_table_match = []
         for page_result in self._collect_page_matches(gt_samples, pred_folder):
-            plain_text_match_clean, formated_display_formula, latex_table_match_s, html_table_match_s, order_match_single, spurious_pred_single = page_result['result']
+            plain_text_match_clean, formated_display_formula, latex_table_match_s, html_table_match_s, order_match_single, spurious_pred_single, spurious_table_single = page_result['result']
 
             if order_match_single:
                 order_match.append(order_match_single)
             if spurious_pred_single:
                 spurious_pred_match.append(spurious_pred_single)
+            if spurious_table_single:
+                spurious_table_match.append(spurious_table_single)
             if plain_text_match_clean:
                 plain_text_match.extend(plain_text_match_clean)
             if formated_display_formula:
@@ -2157,6 +2188,7 @@ class End2EndDataset():
             'table': DATASET_REGISTRY.get('recogition_end2end_table_dataset')(table_match, table_format),
             'reading_order': DATASET_REGISTRY.get('recogition_end2end_base_dataset')(order_match),
             'spurious_pred': DATASET_REGISTRY.get('recogition_end2end_base_dataset')(spurious_pred_match),
+            'spurious_table': DATASET_REGISTRY.get('recogition_end2end_base_dataset')(spurious_table_match),
         }
       
 
@@ -2222,10 +2254,16 @@ class End2EndDataset():
                 converted_item['fine_category_type'] = converted_item.get('fine_category_type', 'latex2html_table')
                 pred_table_candidates.append(converted_item)
 
+        matched_table_count = 0
         if gt_page_elements.get('table'):
             stage_start = time.monotonic()
             gt_table = self.get_sorted_text_list(gt_page_elements['table'])
             html_table_match_s, unmatch_table_pred = match_gt2pred_simple(gt_table, pred_table_candidates, 'html_table', img_name)
+            matched_table_count = sum(
+                1 for x in html_table_match_s
+                if x['gt_idx'] != [""] and x.get('pred_idx') not in ([""], "", None)
+                and list(x['pred_idx'])[:1] != [""]
+            )
             html_table_match_s = [x for x in html_table_match_s if x['gt_idx'] != [""]]  # Remove extra preds
             self._log_slow_stage(img_name, 'table_match', stage_start)
 
@@ -2309,8 +2347,9 @@ class End2EndDataset():
             self._log_slow_stage(img_name, 'reading_order_pair', stage_start)
 
         spurious_pred_single = self._build_spurious_pred_record(match, img_name)
+        spurious_table_single = self._build_spurious_table_record(len(pred_table_candidates), matched_table_count, img_name)
 
-        return [plain_text_match_clean, display_formula_match_s, latex_table_match_s, html_table_match_s, order_match_single, spurious_pred_single]
+        return [plain_text_match_clean, display_formula_match_s, latex_table_match_s, html_table_match_s, order_match_single, spurious_pred_single, spurious_table_single]
 
     
 

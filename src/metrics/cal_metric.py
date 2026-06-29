@@ -410,13 +410,14 @@ class call_Edit_dist():
 
 @METRIC_REGISTRY.register("Spurious_pred")
 class call_Spurious_pred():
-    """Diagnostic: share of predicted text that matched no GT element.
+    """Diagnostic: share of predictions that matched no GT element.
 
-    Each sample is a per-page record carrying ``spurious_chars`` (normalized
-    characters in predictions that matched no GT line) and ``pred_chars`` (all
-    normalized predicted characters routed through the text matcher). The metric
-    reports the spurious fraction per page and corpus-wide. It is additive and
-    does not affect Edit_dist / TEDS / CDM.
+    Each sample is a per-page record carrying ``spurious_amount`` (predicted
+    content matching no GT element) and ``total_amount`` (all predicted content),
+    expressed in whatever unit fits the element: characters for the text-mixing
+    path, table counts for tables. The metric reports the spurious fraction per
+    page and corpus-wide. It is additive and does not affect Edit_dist / TEDS /
+    CDM.
     """
 
     def __init__(self, samples, metric_cfg=None):
@@ -427,24 +428,24 @@ class call_Spurious_pred():
         samples = _as_sample_list(self.samples)
         page_ratios = []
         total_spurious = 0
-        total_pred = 0
+        total_amount = 0
         for sample in samples:
-            pred_chars = sample.get('pred_chars', 0) or 0
-            spurious_chars = sample.get('spurious_chars', 0) or 0
-            ratio = (spurious_chars / pred_chars) if pred_chars > 0 else 0.0
+            amount = sample.get('total_amount', 0) or 0
+            spurious = sample.get('spurious_amount', 0) or 0
+            ratio = (spurious / amount) if amount > 0 else 0.0
             if not sample.get('metric'):
                 sample['metric'] = {}
             sample['metric']['Spurious_pred'] = ratio
-            total_spurious += spurious_chars
-            total_pred += pred_chars
-            if pred_chars > 0:
+            total_spurious += spurious
+            total_amount += amount
+            if amount > 0:
                 page_ratios.append(ratio)
 
         result = {
             'page_avg': _safe_average(page_ratios),
-            'char_weighted': (total_spurious / total_pred) if total_pred > 0 else 'NaN',
-            'spurious_chars': total_spurious,
-            'pred_chars': total_pred,
+            'weighted': (total_spurious / total_amount) if total_amount > 0 else 'NaN',
+            'spurious_total': total_spurious,
+            'total': total_amount,
         }
         return self.samples, {'Spurious_pred': result}
 

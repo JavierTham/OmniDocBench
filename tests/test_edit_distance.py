@@ -221,28 +221,64 @@ class TestSpuriousPredDiagnostic:
         match = [{"gt_idx": [0], "norm_pred": "", "pred": ""}]
         assert End2EndDataset._build_spurious_pred_record(None, match, "p.jpg") == {}
 
+    def test_record_builder_emits_unit_neutral_amounts(self):
+        from src.dataset.end2end_dataset import End2EndDataset
+        match = [
+            {"gt_idx": [0], "norm_pred": "matchedpred", "pred": "matchedpred"},
+            {"gt_idx": [""], "norm_pred": "halluc", "pred": "halluc"},
+        ]
+        rec = End2EndDataset._build_spurious_pred_record(None, match, "p.jpg")
+        # the metric consumes the unit-neutral fields (here: characters)
+        assert rec["spurious_amount"] == rec["spurious_chars"] == 6
+        assert rec["total_amount"] == rec["pred_chars"] == 17
+
+    def test_table_record_builder_counts_spurious_tables(self):
+        from src.dataset.end2end_dataset import End2EndDataset
+        # 3 predicted tables, 1 matched a GT table -> 2 spurious
+        rec = End2EndDataset._build_spurious_table_record(None, 3, 1, "p.jpg")
+        assert rec["img_id"] == "p.jpg"
+        assert rec["pred_tables"] == 3
+        assert rec["spurious_tables"] == 2
+        assert rec["total_amount"] == 3
+        assert rec["spurious_amount"] == 2
+
+    def test_table_record_builder_empty_when_no_pred_tables(self):
+        from src.dataset.end2end_dataset import End2EndDataset
+        assert End2EndDataset._build_spurious_table_record(None, 0, 0, "p.jpg") == {}
+
     def test_metric_reports_page_and_corpus_ratios(self):
         from src.metrics.cal_metric import call_Spurious_pred
         samples = [
-            {"img_id": "a.jpg", "spurious_chars": 20, "pred_chars": 100},  # 0.2
-            {"img_id": "b.jpg", "spurious_chars": 0, "pred_chars": 50},    # 0.0
+            {"img_id": "a.jpg", "spurious_amount": 20, "total_amount": 100},  # 0.2
+            {"img_id": "b.jpg", "spurious_amount": 0, "total_amount": 50},    # 0.0
         ]
         _, res = call_Spurious_pred(samples).evaluate()
         assert samples[0]["metric"]["Spurious_pred"] == pytest.approx(0.2)
         assert res["Spurious_pred"]["page_avg"] == pytest.approx(0.1)
-        assert res["Spurious_pred"]["char_weighted"] == pytest.approx(20 / 150)
+        assert res["Spurious_pred"]["weighted"] == pytest.approx(20 / 150)
+
+    def test_metric_works_for_table_counts(self):
+        from src.metrics.cal_metric import call_Spurious_pred
+        # same metric, table-count unit: 2 spurious of 3 predicted, plus a clean page
+        samples = [
+            {"img_id": "a.jpg", "spurious_amount": 2, "total_amount": 3},
+            {"img_id": "b.jpg", "spurious_amount": 0, "total_amount": 1},
+        ]
+        _, res = call_Spurious_pred(samples).evaluate()
+        assert res["Spurious_pred"]["weighted"] == pytest.approx(2 / 4)
+        assert res["Spurious_pred"]["page_avg"] == pytest.approx((2 / 3 + 0) / 2)
 
     def test_metric_handles_empty_and_zero_pred_pages(self):
         from src.metrics.cal_metric import call_Spurious_pred
         _, res_empty = call_Spurious_pred([]).evaluate()
         assert res_empty["Spurious_pred"]["page_avg"] == "NaN"
-        assert res_empty["Spurious_pred"]["char_weighted"] == "NaN"
+        assert res_empty["Spurious_pred"]["weighted"] == "NaN"
 
-        samples = [{"img_id": "a.jpg", "spurious_chars": 0, "pred_chars": 0}]
+        samples = [{"img_id": "a.jpg", "spurious_amount": 0, "total_amount": 0}]
         _, res_zero = call_Spurious_pred(samples).evaluate()
         # a page with no predictions contributes no ratio to the page average
         assert res_zero["Spurious_pred"]["page_avg"] == "NaN"
-        assert res_zero["Spurious_pred"]["char_weighted"] == "NaN"
+        assert res_zero["Spurious_pred"]["weighted"] == "NaN"
 
 
 if __name__ == "__main__":
