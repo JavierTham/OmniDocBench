@@ -257,6 +257,42 @@ class End2EndDataset():
         else:
             return {}  # If both GT and pred are empty for the page, return empty
 
+    def _build_spurious_pred_record(self, match, img_name):
+        """Per-page spurious-prediction diagnostic for the text-mixing path.
+
+        ``match`` is the output of the text matcher (text + isolated/inline
+        equations). Entries with ``gt_idx == [""]`` are predicted lines that
+        matched no GT element, i.e. extra / hallucinated content. We report the
+        share of predicted characters that fell into such entries. This is a
+        diagnostic only and does not feed Edit_dist / TEDS / CDM.
+        """
+        if not match:
+            return {}
+
+        def _norm_pred_len(item):
+            return len(str(item.get('norm_pred', '') or ''))
+
+        pred_chars = sum(_norm_pred_len(item) for item in match)
+        if pred_chars <= 0:
+            return {}
+
+        spurious_items = [item for item in match if item.get('gt_idx') == [""]]
+        spurious_chars = sum(_norm_pred_len(item) for item in spurious_items)
+        spurious_text = ' '.join(
+            str(item.get('pred', '') or '') for item in spurious_items if item.get('pred')
+        )
+
+        return {
+            'img_id': img_name,
+            'gt': '',
+            'norm_gt': '',
+            'pred': spurious_text,
+            'norm_pred': spurious_text,
+            'gt_attribute': [{}],
+            'spurious_chars': spurious_chars,
+            'pred_chars': pred_chars,
+        }
+
     # 为公式匹配结果添加 img_id 信息。
     def formula_format(self, formula_matches, img_name):
         # formated_list = []
@@ -2078,11 +2114,14 @@ class End2EndDataset():
         html_table_match = []
         latex_table_match = []
         order_match = []
+        spurious_pred_match = []
         for page_result in self._collect_page_matches(gt_samples, pred_folder):
-            plain_text_match_clean, formated_display_formula, latex_table_match_s, html_table_match_s, order_match_single = page_result['result']
+            plain_text_match_clean, formated_display_formula, latex_table_match_s, html_table_match_s, order_match_single, spurious_pred_single = page_result['result']
 
             if order_match_single:
                 order_match.append(order_match_single)
+            if spurious_pred_single:
+                spurious_pred_match.append(spurious_pred_single)
             if plain_text_match_clean:
                 plain_text_match.extend(plain_text_match_clean)
             if formated_display_formula:
@@ -2116,7 +2155,8 @@ class End2EndDataset():
             'text_block': DATASET_REGISTRY.get('recogition_end2end_base_dataset')(plain_text_match),
             'display_formula':  DATASET_REGISTRY.get('recogition_end2end_base_dataset')(display_formula_match), 
             'table': DATASET_REGISTRY.get('recogition_end2end_table_dataset')(table_match, table_format),
-            'reading_order': DATASET_REGISTRY.get('recogition_end2end_base_dataset')(order_match)
+            'reading_order': DATASET_REGISTRY.get('recogition_end2end_base_dataset')(order_match),
+            'spurious_pred': DATASET_REGISTRY.get('recogition_end2end_base_dataset')(spurious_pred_match),
         }
       
 
@@ -2268,7 +2308,9 @@ class End2EndDataset():
             order_match_single = self.get_order_paired(order_match_s, img_name)
             self._log_slow_stage(img_name, 'reading_order_pair', stage_start)
 
-        return [plain_text_match_clean, display_formula_match_s, latex_table_match_s, html_table_match_s, order_match_single]        
+        spurious_pred_single = self._build_spurious_pred_record(match, img_name)
+
+        return [plain_text_match_clean, display_formula_match_s, latex_table_match_s, html_table_match_s, order_match_single, spurious_pred_single]
 
     
 

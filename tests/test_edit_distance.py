@@ -137,10 +137,10 @@ class TestHallucinationPenalty:
         assert list(halluc_entries[0]["pred_idx"]) == [1, 2]
         assert halluc_entries[0]["edit"] == 1
 
-    def test_quick_merge_drops_leftover_unmatched_preds(self):
-        # CURRENT BEHAVIOR (blind spot): merge_duplicates_add_unmatched re-adds
-        # unmatched GT lines as misses, but NEVER re-adds unmatched predictions.
-        # So leftover hallucinated preds disappear entirely from scoring.
+    def test_quick_merge_surfaces_leftover_unmatched_preds(self):
+        # FIXED BEHAVIOR: merge_duplicates_add_unmatched now re-adds unmatched
+        # predictions as a gt-less entry (gt_idx == [""]) instead of dropping
+        # them, so the spurious-prediction diagnostic can see hallucinated text.
         out = merge_duplicates_add_unmatched(
             converted_results=[],            # nothing matched
             norm_gt_lines=["gtline"],
@@ -150,13 +150,15 @@ class TestHallucinationPenalty:
             all_gt_indices={0},
             all_pred_indices={0, 1},
         )
-        # the missing GT is surfaced...
+        # the missing GT is still surfaced as a miss...
         missing_gt = [e for e in out if e["gt_idx"] == [0]]
         assert len(missing_gt) == 1
         assert missing_gt[0]["pred_idx"] == [""]
-        # ...but neither hallucinated prediction is present anywhere
-        entries_with_pred = [e for e in out if e.get("pred_idx") not in ([""], "")]
-        assert entries_with_pred == []
+        # ...and both leftover predictions are now present in one gt-less entry
+        spurious = [e for e in out if e["gt_idx"] == [""]]
+        assert len(spurious) == 1
+        assert list(spurious[0]["pred_idx"]) == [0, 1]
+        assert spurious[0]["edit"] == 1
 
 
 # ===========================================================================
@@ -196,6 +198,51 @@ class TestEditDistAggregationEdgeCases:
         assert res["Edit_dist"]["edit_whole"] == "NaN"
         assert res["Edit_dist"]["ALL_page_avg"] == "NaN"
         assert res["Edit_dist"]["edit_sample_avg"] == "NaN"
+
+
+# ===========================================================================
+# 5. Spurious-prediction diagnostic (additive; does not touch Edit_dist)
+# ===========================================================================
+class TestSpuriousPredDiagnostic:
+    def test_record_builder_counts_unmatched_pred_chars(self):
+        from src.dataset.end2end_dataset import End2EndDataset
+        match = [
+            {"gt_idx": [0], "norm_pred": "matchedpred", "pred": "matchedpred"},  # 11
+            {"gt_idx": [""], "norm_pred": "halluc", "pred": "halluc"},           # 6 (spurious)
+        ]
+        # method uses no instance state, so an unbound call with self=None is fine
+        rec = End2EndDataset._build_spurious_pred_record(None, match, "p.jpg")
+        assert rec["img_id"] == "p.jpg"
+        assert rec["pred_chars"] == 17
+        assert rec["spurious_chars"] == 6
+
+    def test_record_builder_returns_empty_when_no_predictions(self):
+        from src.dataset.end2end_dataset import End2EndDataset
+        match = [{"gt_idx": [0], "norm_pred": "", "pred": ""}]
+        assert End2EndDataset._build_spurious_pred_record(None, match, "p.jpg") == {}
+
+    def test_metric_reports_page_and_corpus_ratios(self):
+        from src.metrics.cal_metric import call_Spurious_pred
+        samples = [
+            {"img_id": "a.jpg", "spurious_chars": 20, "pred_chars": 100},  # 0.2
+            {"img_id": "b.jpg", "spurious_chars": 0, "pred_chars": 50},    # 0.0
+        ]
+        _, res = call_Spurious_pred(samples).evaluate()
+        assert samples[0]["metric"]["Spurious_pred"] == pytest.approx(0.2)
+        assert res["Spurious_pred"]["page_avg"] == pytest.approx(0.1)
+        assert res["Spurious_pred"]["char_weighted"] == pytest.approx(20 / 150)
+
+    def test_metric_handles_empty_and_zero_pred_pages(self):
+        from src.metrics.cal_metric import call_Spurious_pred
+        _, res_empty = call_Spurious_pred([]).evaluate()
+        assert res_empty["Spurious_pred"]["page_avg"] == "NaN"
+        assert res_empty["Spurious_pred"]["char_weighted"] == "NaN"
+
+        samples = [{"img_id": "a.jpg", "spurious_chars": 0, "pred_chars": 0}]
+        _, res_zero = call_Spurious_pred(samples).evaluate()
+        # a page with no predictions contributes no ratio to the page average
+        assert res_zero["Spurious_pred"]["page_avg"] == "NaN"
+        assert res_zero["Spurious_pred"]["char_weighted"] == "NaN"
 
 
 if __name__ == "__main__":

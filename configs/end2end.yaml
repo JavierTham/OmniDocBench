@@ -18,6 +18,11 @@ end2end_eval:
     reading_order:
       metric:
       - Edit_dist
+    # Diagnostic only: fraction of predicted text matching no GT element.
+    # Additive — does not affect text_block / display_formula / table scores.
+    spurious_pred:
+      metric:
+      - Spurious_pred
   dataset:
     dataset_name: end2end_dataset
     ground_truth:

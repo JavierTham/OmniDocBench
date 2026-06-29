@@ -1253,6 +1253,33 @@ def merge_duplicates_add_unmatched(converted_results, norm_gt_lines, norm_pred_l
                 'pred': "",
                 'edit': 1
             })
+
+    # Surface predicted lines that were never matched to any GT line. Previously
+    # these were silently dropped (convert_final_matches force-pairs only
+    # min(#gt, #pred) leftovers and discards the rest when unmatched GT lines
+    # exist), making extra / hallucinated predictions invisible. Emitting them as
+    # an unmatched-pred entry (gt_idx == [""]) lets the spurious-prediction
+    # diagnostic see them; downstream element pipelines still filter gt-less
+    # entries, so headline Edit_dist / TEDS / CDM scores are unchanged.
+    used_pred_indices = set()
+    for entry in merged_results:
+        pred_idx = entry['pred_idx']
+        for idx in (pred_idx if isinstance(pred_idx, list) else [pred_idx]):
+            if isinstance(idx, int):
+                used_pred_indices.add(idx)
+    leftover_pred_indices = sorted(
+        idx for idx in all_pred_indices
+        if isinstance(idx, int) and idx not in used_pred_indices
+    )
+    if leftover_pred_indices:
+        merged_results.append({
+            'gt_idx': [""],
+            'gt': "",
+            'pred_idx': leftover_pred_indices,
+            'pred': ' '.join(pred_lines[idx] for idx in leftover_pred_indices),
+            'edit': 1
+        })
+
     return merged_results
 
 

@@ -408,6 +408,47 @@ class call_Edit_dist():
         return samples, {'Edit_dist': {'ALL_page_avg': up_total_avg.mean(), 'edit_whole': edit_whole, 'edit_sample_avg': edit_sample_avg}}
 
 
+@METRIC_REGISTRY.register("Spurious_pred")
+class call_Spurious_pred():
+    """Diagnostic: share of predicted text that matched no GT element.
+
+    Each sample is a per-page record carrying ``spurious_chars`` (normalized
+    characters in predictions that matched no GT line) and ``pred_chars`` (all
+    normalized predicted characters routed through the text matcher). The metric
+    reports the spurious fraction per page and corpus-wide. It is additive and
+    does not affect Edit_dist / TEDS / CDM.
+    """
+
+    def __init__(self, samples, metric_cfg=None):
+        self.samples = samples
+        self.metric_cfg = metric_cfg or {}
+
+    def evaluate(self, group_info=[], save_name='default'):
+        samples = _as_sample_list(self.samples)
+        page_ratios = []
+        total_spurious = 0
+        total_pred = 0
+        for sample in samples:
+            pred_chars = sample.get('pred_chars', 0) or 0
+            spurious_chars = sample.get('spurious_chars', 0) or 0
+            ratio = (spurious_chars / pred_chars) if pred_chars > 0 else 0.0
+            if not sample.get('metric'):
+                sample['metric'] = {}
+            sample['metric']['Spurious_pred'] = ratio
+            total_spurious += spurious_chars
+            total_pred += pred_chars
+            if pred_chars > 0:
+                page_ratios.append(ratio)
+
+        result = {
+            'page_avg': _safe_average(page_ratios),
+            'char_weighted': (total_spurious / total_pred) if total_pred > 0 else 'NaN',
+            'spurious_chars': total_spurious,
+            'pred_chars': total_pred,
+        }
+        return self.samples, {'Spurious_pred': result}
+
+
 def _strip_cdm_math_wrappers(text):
     text = str(text or '').strip()
     text = text.lstrip("$$").rstrip("$$").strip()
