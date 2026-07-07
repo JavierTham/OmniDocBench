@@ -111,6 +111,34 @@ additively rather than change what the headline metrics penalize.
 
 ---
 
+### 3.4 Fix: softened the 0.7 rejection cliff in quick_match
+`src/core/matching/match_quick.py`
+
+`process_matches` rejects Hungarian pairs with edit > 0.7 (now the named
+constant `QUICK_MATCH_REJECT_EDIT`) so fuzzy recovery can try to re-match both
+sides. Previously, pairs that recovery could not improve were scored as a
+missed GT (edit=1) **plus** an unmatched prediction — a discontinuity where a
+pair at 0.71 scored strictly worse than one at 0.70, and (combined with
+paragraph-boundary misalignment, see §2.2) a perfectly extracted paragraph
+could score as a total miss.
+
+Now `restore_rejected_pairs` restores such pairs with their **actual** edit
+distance after recovery has had its chance. Pairs with edit ≥ 1 (no shared
+content) stay rejected so garbage predictions still surface as unmatched.
+The score is thereby continuous in prediction quality.
+
+Notes:
+- On the demo set the headline `edit_whole` is unchanged; restorable
+  rejections are rare for good predictions. The improvement shows on pages
+  with heavy segmentation errors, and in pairing quality: restored pairs
+  replace the arbitrary "force-pair leftover GT with leftover pred at edit=1"
+  entries, which also feeds cleaner pairings to the reading-order metric and
+  the spurious diagnostic.
+- The paragraph-segmentation double-counting itself (a boundary landing
+  mid-paragraph leaks edits into both neighboring pairs) is **still present**
+  and pinned by `TestParagraphSegmentationSensitivity`; fixing it needs
+  boundary repair or alignment-based matching (see follow-ups).
+
 ## 4. Tests
 `tests/test_edit_distance.py` (run: `python -m pytest tests/test_edit_distance.py -v`)
 
@@ -177,6 +205,11 @@ Demo-set sanity check (18 pages):
 
 ## 7. Suggested follow-ups (not done)
 
+0. Fix paragraph-boundary double-counting: content-identical predictions whose
+   paragraph boundary lands mid-paragraph leak large edits into both
+   neighboring pairs (pinned by `TestParagraphSegmentationSensitivity`).
+   Options: local boundary repair between adjacent matched pairs (cheap), or
+   segmentation-invariant alignment-projection matching (principled).
 1. Add a `spurious_formula` diagnostic for standalone display formulas.
 2. Surface `Spurious_pred` in the run-summary / notebook tables.
 3. Fix the BLEU/METEOR `predictions`/`references` swap (a behavior change for

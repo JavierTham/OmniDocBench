@@ -23,6 +23,11 @@ from loguru import logger
 
 MAX_TRUNCATED_PRED_MERGE = 160
 
+# Hungarian pairs with a normalized edit distance above this are rejected and
+# handed to fuzzy recovery; if recovery finds nothing better the pair is
+# restored with its actual edit distance (see restore_rejected_pairs).
+QUICK_MATCH_REJECT_EDIT = 0.7
+
 
 class TruncatedMatchTimeout(RuntimeError):
     pass
@@ -1072,7 +1077,7 @@ def match_gt2pred_quick(gt_items, pred_items, line_type, img_name, truncated_tim
     # print("-------------pred_lens_dict-------------")
     # print(pred_lens_dict)
     
-    matches, unmatched_gt_indices, unmatched_pred_indices = process_matches(matched_col_idx, row_ind, cost_list, no_ignores_gt_lines, no_ignores_pred_lines, no_ignores_ori_pred_lines)
+    matches, unmatched_gt_indices, unmatched_pred_indices, rejected_pairs = process_matches(matched_col_idx, row_ind, cost_list, no_ignores_gt_lines, no_ignores_pred_lines, no_ignores_ori_pred_lines)
 
     # print("-------------matches-------------")
     # print(matches)
@@ -1095,6 +1100,8 @@ def match_gt2pred_quick(gt_items, pred_items, line_type, img_name, truncated_tim
     final_matches = merge_matches(matches, matching_dict)
     # print("-------------final_matches-------------")
     # print(final_matches)
+
+    final_matches = restore_rejected_pairs(final_matches, rejected_pairs)
 
     recalculate_edit_distances(final_matches, gt_lens_dict, no_ignores_gt_lines, no_ignores_pred_lines)
     # print("-------------recalculate_edit_distances-------------")
@@ -1566,6 +1573,7 @@ def process_matches(matched_col_idx, row_ind, cost_list, norm_gt_lines, norm_pre
     matches = {}
     unmatched_gt_indices = []
     unmatched_pred_indices = []
+    rejected_pairs = {}
 
     for i in range(len(norm_gt_lines)):
         if i in row_ind:
@@ -1587,9 +1595,17 @@ def process_matches(matched_col_idx, row_ind, cost_list, norm_gt_lines, norm_pre
 
             edit = cost_list[idx]
 
-            if edit > 0.7:
+            if edit > QUICK_MATCH_REJECT_EDIT:
+                # Reject the pair so fuzzy recovery gets a chance to re-match
+                # both sides, but remember it: if recovery finds nothing better
+                # the pair is restored with its true edit distance instead of
+                # being scored as a miss (edit=1) plus a spurious prediction.
                 unmatched_pred_indices.extend(matched_pred_indices_range)
                 unmatched_gt_indices.append(i)
+                rejected_pairs[i] = {
+                    'pred_indices': matched_pred_indices_range,
+                    'edit_distance': edit,
+                }
             else:
                 matches[i] = {
                     'pred_indices': matched_pred_indices_range,
@@ -1601,7 +1617,44 @@ def process_matches(matched_col_idx, row_ind, cost_list, norm_gt_lines, norm_pre
         else:
             unmatched_gt_indices.append(i)
 
-    return matches, unmatched_gt_indices, unmatched_pred_indices
+    return matches, unmatched_gt_indices, unmatched_pred_indices, rejected_pairs
+
+
+def restore_rejected_pairs(final_matches, rejected_pairs):
+    """Restore rejected Hungarian pairs that found nothing better.
+
+    A pair whose edit exceeds QUICK_MATCH_REJECT_EDIT is thrown back to the
+    unmatched pools so fuzzy recovery can try to re-match both sides. Before
+    this restore step, pairs that recovery could not improve were scored as a
+    missed GT (edit=1) plus an unmatched prediction — a discontinuity where a
+    pair at 0.71 scored strictly worse than one at 0.70. Restoring the original
+    pair with its actual edit distance keeps the score continuous in prediction
+    quality. Pairs whose GT or prediction was claimed by recovery are left
+    alone, and identical-to-nothing pairs (edit >= 1) stay rejected so fully
+    unrelated predictions still surface as unmatched.
+    """
+    used_gt_indices = set()
+    used_pred_indices = set()
+    for pred_key, info in final_matches.items():
+        used_gt_indices.update(info['gt_indices'])
+        used_pred_indices.update(idx for idx in pred_key if isinstance(idx, int))
+
+    for gt_idx, info in sorted(rejected_pairs.items()):
+        if info['edit_distance'] >= 1:
+            continue
+        if gt_idx in used_gt_indices:
+            continue
+        pred_key = tuple(sorted(info['pred_indices']))
+        if any(idx in used_pred_indices for idx in pred_key):
+            continue
+        final_matches[pred_key] = {
+            'gt_indices': [gt_idx],
+            'edit_distance': info['edit_distance'],
+        }
+        used_gt_indices.add(gt_idx)
+        used_pred_indices.update(pred_key)
+
+    return final_matches
 
 def fuzzy_match_unmatched_items(unmatched_gt_indices, norm_gt_lines, norm_pred_lines, gt_cat_list=None):
     matching_dict = {}

@@ -292,11 +292,14 @@ class TestParagraphSegmentationSensitivity:
     sub-splits, but a boundary landing MID-paragraph leaks large edit distances
     even though the concatenated text is character-identical to the GT. The
     misplaced fragment is double-counted (as an insertion in one pair and a
-    deletion in the other), and large shifts cross the 0.7 rejection cliff,
-    scoring a perfectly-extracted paragraph as a total miss (edit=1).
+    deletion in the other).
 
-    A segmentation-robust matcher should drive all these totals to ~0. When
-    that fix lands, flip the buggy assertions below.
+    The 0.7 rejection cliff has been softened: pairs above the threshold that
+    fuzzy recovery cannot improve are restored with their actual edit distance
+    instead of being scored as a miss (edit=1) plus a spurious prediction. The
+    double-counting itself remains; a segmentation-robust matcher should drive
+    all these totals to ~0, and the remaining buggy assertions should be
+    flipped when that lands.
     """
 
     PARA_A = ("The quick brown fox jumps over the lazy dog while the sun "
@@ -364,10 +367,12 @@ class TestParagraphSegmentationSensitivity:
         assert all(float(m["edit"]) > 0.2 for m in matched_rows)
         assert self._total_edit(match) > 0.5
 
-    def test_large_shift_crosses_rejection_cliff_bug(self):
-        # CURRENT BEHAVIOR (bug): shift the boundary 80% into PARA_B; the
-        # second pair's edit exceeds the 0.7 rejection threshold, so a
-        # perfectly-extracted paragraph is scored as a full miss (edit=1).
+    def test_large_shift_keeps_true_pair_distance(self):
+        # FIXED BEHAVIOR (cliff softened): shift the boundary 80% into PARA_B;
+        # the second pair's edit exceeds the 0.7 rejection threshold, but the
+        # pair is restored with its actual edit distance instead of being
+        # scored as a full miss (edit=1) plus a spurious prediction. The
+        # segmentation double-counting itself still inflates the total.
         shift = self.PARA_B.rfind(" ", 0, int(len(self.PARA_B) * 0.8))
         preds = [self.PARA_A + " " + self.PARA_B[:shift],
                  self.PARA_B[shift + 1:]]
@@ -375,8 +380,65 @@ class TestParagraphSegmentationSensitivity:
 
         match = self._match(preds)
         edits = sorted(float(m["edit"]) for m in match if m["gt_idx"] != [""])
-        assert edits[-1] == 1.0                     # rejected outright
-        assert self._total_edit(match) > 1.0        # worse than a real miss
+        assert 0.7 < edits[-1] < 1.0     # kept at its true distance, not 1.0
+        # no spurious row: the restored pair consumes the prediction
+        assert all(m["gt_idx"] != [""] for m in match)
+
+    def test_rejected_pair_above_threshold_keeps_actual_edit(self):
+        # FIXED BEHAVIOR (cliff softened): a pair whose edit lands just above
+        # the 0.7 rejection threshold keeps its actual edit distance instead
+        # of jumping to 1.0 (miss) + spurious prediction.
+        from src.core.matching.match_quick import (
+            QUICK_MATCH_REJECT_EDIT,
+            match_gt2pred_quick,
+        )
+        gt_items = [
+            {"category_type": "text_block",
+             "text": "completely different first line content here",
+             "order": 1, "position": [0, 1], "attribute": {}},
+            {"category_type": "text_block",
+             "text": "alpha beta gamma delta epsilon zeta eta theta",
+             "order": 2, "position": [2, 3], "attribute": {}},
+        ]
+        pred_items = [
+            {"category_type": "text_all",
+             "content": "completely different first line content here",
+             "position": [0, 9]},
+            # shares only the first two words with its GT -> edit ~0.76
+            {"category_type": "text_all",
+             "content": "alpha beta xxxx yyyy zzzz qqqq wwww rrrr",
+             "position": [10, 19]},
+        ]
+        match = match_gt2pred_quick(gt_items, pred_items, "text_all", "img")
+        edits = sorted(float(m["edit"]) for m in match if m["gt_idx"] != [""])
+        assert edits[0] == pytest.approx(0.0)
+        assert QUICK_MATCH_REJECT_EDIT < edits[-1] < 1.0
+        # nothing became spurious: the restored pair consumed the prediction
+        assert all(m["gt_idx"] != [""] for m in match)
+
+    def test_fully_unrelated_pair_is_not_restored(self):
+        # edit >= 1 pairs stay rejected: a prediction sharing nothing with its
+        # GT must not be laundered into a "match" by the restore step.
+        from src.core.matching.match_quick import match_gt2pred_quick
+        gt_items = [
+            {"category_type": "text_block",
+             "text": "completely different first line content here",
+             "order": 1, "position": [0, 1], "attribute": {}},
+            {"category_type": "text_block",
+             "text": "alpha beta gamma delta epsilon zeta eta theta",
+             "order": 2, "position": [2, 3], "attribute": {}},
+        ]
+        pred_items = [
+            {"category_type": "text_all",
+             "content": "completely different first line content here",
+             "position": [0, 9]},
+            {"category_type": "text_all",
+             "content": "0123456789 0123456789 0123456789",
+             "position": [10, 19]},
+        ]
+        match = match_gt2pred_quick(gt_items, pred_items, "text_all", "img")
+        edits = sorted(float(m["edit"]) for m in match if m["gt_idx"] != [""])
+        assert edits[-1] == 1.0
 
     def test_penalty_grows_with_shift_distance(self):
         # CURRENT BEHAVIOR: even a one-word boundary shift is penalized, and
