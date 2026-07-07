@@ -281,5 +281,119 @@ class TestSpuriousPredDiagnostic:
         assert res_zero["Spurious_pred"]["weighted"] == "NaN"
 
 
+# ===========================================================================
+# 6. Paragraph-segmentation sensitivity of quick_match
+# ===========================================================================
+class TestParagraphSegmentationSensitivity:
+    """Pin how the line-based matcher scores content-identical predictions that
+    only differ in where paragraph boundaries fall.
+
+    CURRENT BEHAVIOR (bug): the matcher handles merged paragraphs and clean
+    sub-splits, but a boundary landing MID-paragraph leaks large edit distances
+    even though the concatenated text is character-identical to the GT. The
+    misplaced fragment is double-counted (as an insertion in one pair and a
+    deletion in the other), and large shifts cross the 0.7 rejection cliff,
+    scoring a perfectly-extracted paragraph as a total miss (edit=1).
+
+    A segmentation-robust matcher should drive all these totals to ~0. When
+    that fix lands, flip the buggy assertions below.
+    """
+
+    PARA_A = ("The quick brown fox jumps over the lazy dog while the sun "
+              "sets slowly behind the mountains.")
+    PARA_B = ("Meanwhile the river flows gently through the valley carrying "
+              "leaves and small branches downstream.")
+
+    def _match(self, pred_texts):
+        from src.core.matching.match_quick import match_gt2pred_quick
+        gt_items = [
+            {"category_type": "text_block", "text": self.PARA_A,
+             "order": 1, "position": [0, 1], "attribute": {}},
+            {"category_type": "text_block", "text": self.PARA_B,
+             "order": 2, "position": [2, 3], "attribute": {}},
+        ]
+        pred_items = [
+            {"category_type": "text_all", "content": text,
+             "position": [i * 10, i * 10 + 9]}
+            for i, text in enumerate(pred_texts)
+        ]
+        return match_gt2pred_quick(gt_items, pred_items, "text_all", "img")
+
+    @staticmethod
+    def _total_edit(match):
+        return sum(float(m["edit"]) for m in match)
+
+    def _preds_content_identical_to_gt(self, pred_texts):
+        # precondition helper: normalized concatenation identical to GT's
+        gt_norm = normalized_text(self.PARA_A) + normalized_text(self.PARA_B)
+        pred_norm = "".join(normalized_text(t) for t in pred_texts)
+        return gt_norm == pred_norm
+
+    def test_same_split_scores_zero(self):
+        preds = [self.PARA_A, self.PARA_B]
+        assert self._preds_content_identical_to_gt(preds)
+        assert self._total_edit(self._match(preds)) == pytest.approx(0.0)
+
+    def test_merged_paragraphs_score_zero(self):
+        # dropping the paragraph break entirely is handled (fuzzy recovery)
+        preds = [self.PARA_A + " " + self.PARA_B]
+        assert self._preds_content_identical_to_gt(preds)
+        assert self._total_edit(self._match(preds)) == pytest.approx(0.0)
+
+    def test_clean_oversplit_scores_near_zero(self):
+        # splitting each paragraph in half is handled (truncation merge)
+        half_a = self.PARA_A.rfind(" ", 0, len(self.PARA_A) // 2)
+        half_b = self.PARA_B.rfind(" ", 0, len(self.PARA_B) // 2)
+        preds = [self.PARA_A[:half_a], self.PARA_A[half_a + 1:],
+                 self.PARA_B[:half_b], self.PARA_B[half_b + 1:]]
+        assert self._preds_content_identical_to_gt(preds)
+        assert self._total_edit(self._match(preds)) < 0.05
+
+    def test_shifted_boundary_leaks_large_edit_bug(self):
+        # CURRENT BEHAVIOR (bug): move the paragraph boundary to the middle of
+        # PARA_B; content is unchanged but both matched rows leak large edits.
+        shift = self.PARA_B.rfind(" ", 0, len(self.PARA_B) // 2)
+        preds = [self.PARA_A + " " + self.PARA_B[:shift],
+                 self.PARA_B[shift + 1:]]
+        assert self._preds_content_identical_to_gt(preds)
+
+        match = self._match(preds)
+        matched_rows = [m for m in match if m["gt_idx"] != [""]]
+        assert len(matched_rows) == 2
+        # each row eats a big chunk of edit distance despite identical content
+        assert all(float(m["edit"]) > 0.2 for m in matched_rows)
+        assert self._total_edit(match) > 0.5
+
+    def test_large_shift_crosses_rejection_cliff_bug(self):
+        # CURRENT BEHAVIOR (bug): shift the boundary 80% into PARA_B; the
+        # second pair's edit exceeds the 0.7 rejection threshold, so a
+        # perfectly-extracted paragraph is scored as a full miss (edit=1).
+        shift = self.PARA_B.rfind(" ", 0, int(len(self.PARA_B) * 0.8))
+        preds = [self.PARA_A + " " + self.PARA_B[:shift],
+                 self.PARA_B[shift + 1:]]
+        assert self._preds_content_identical_to_gt(preds)
+
+        match = self._match(preds)
+        edits = sorted(float(m["edit"]) for m in match if m["gt_idx"] != [""])
+        assert edits[-1] == 1.0                     # rejected outright
+        assert self._total_edit(match) > 1.0        # worse than a real miss
+
+    def test_penalty_grows_with_shift_distance(self):
+        # CURRENT BEHAVIOR: even a one-word boundary shift is penalized, and
+        # the penalty grows with the shift, despite identical content.
+        one_word = self.PARA_B.find(" ")
+        mid = self.PARA_B.rfind(" ", 0, len(self.PARA_B) // 2)
+
+        def total_for(shift):
+            preds = [self.PARA_A + " " + self.PARA_B[:shift],
+                     self.PARA_B[shift + 1:]]
+            assert self._preds_content_identical_to_gt(preds)
+            return self._total_edit(self._match(preds))
+
+        small, large = total_for(one_word), total_for(mid)
+        assert small > 0.1        # nonzero even for a one-word shift
+        assert large > small      # grows with shift distance
+
+
 if __name__ == "__main__":
     sys.exit(pytest.main([__file__, "-v"]))
