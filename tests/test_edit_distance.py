@@ -299,6 +299,75 @@ class TestSpuriousPredDiagnostic:
 
 
 # ===========================================================================
+# 5b. Orphan adoption: anchored partial matches absorb adjacent fragments
+# ===========================================================================
+class TestOrphanAdoption:
+    """deal_with_truncated anchors any pair scoring < 0.25 before evaluating
+    merges, so a pred covering most of a GT element (e.g. a title whose
+    "Article 16" prefix was emitted as its own line) used to lock in and
+    strand the leftover fragment as spurious. adopt_adjacent_unmatched_preds
+    re-attaches such fragments when they genuinely occur inside the GT text
+    and improve the match; garbage never qualifies.
+    """
+
+    TITLE = "Article 16 Currency conversion and remittance of earnings"
+
+    def _match(self, gt_texts, pred_texts):
+        from src.core.matching.match_quick import match_gt2pred_quick
+        gt = [{"category_type": "text_block", "text": t, "order": i + 1,
+               "position": [i * 2, i * 2 + 1], "attribute": {}}
+              for i, t in enumerate(gt_texts)]
+        preds = [{"category_type": "text_all", "content": t,
+                  "position": [i * 10, i * 10 + 9]}
+                 for i, t in enumerate(pred_texts)]
+        return match_gt2pred_quick(gt, preds, "text_all", "img")
+
+    def test_split_title_prefix_is_adopted(self):
+        # FIXED BEHAVIOR: a title predicted as two lines ("Article 16" /
+        # body) scores 0 with no spurious entry, instead of 0.18 + the
+        # prefix stranded as hallucinated.
+        match = self._match([self.TITLE],
+                            ["Article 16",
+                             "Currency conversion and remittance of earnings"])
+        assert len(match) == 1
+        assert match[0]["gt_idx"] == [0]
+        assert sorted(match[0]["pred_idx"]) == [0, 1]
+        assert float(match[0]["edit"]) == pytest.approx(0.0)
+
+    def test_noisy_fragment_is_still_adopted(self):
+        # realistic OCR noise in the body must not block adoption
+        match = self._match([self.TITLE],
+                            ["Article 16",
+                             "Currency conversi0n and rem1ttance of earnings"])
+        assert len(match) == 1
+        assert sorted(match[0]["pred_idx"]) == [0, 1]
+        assert float(match[0]["edit"]) < 0.1
+
+    def test_true_hallucination_is_not_adopted(self):
+        # a garbage neighbor of a perfect match must stay spurious
+        match = self._match([self.TITLE],
+                            [self.TITLE,
+                             "zzzz qqqq wwww totally fabricated content"])
+        matched = [m for m in match if m["gt_idx"] != [""]]
+        spurious = [m for m in match if m["gt_idx"] == [""]]
+        assert len(matched) == 1 and matched[0]["pred_idx"] == [0]
+        assert float(matched[0]["edit"]) == pytest.approx(0.0)
+        assert len(spurious) == 1 and spurious[0]["pred_idx"] == [1]
+
+    def test_garbage_is_not_laundered_into_partial_match(self):
+        # Regression for the gain-margin loophole: garbage adjacent to a
+        # mediocre partial match can shrink the length deficit slightly, but
+        # it does not occur inside the GT text, so the fragment-fit gate must
+        # reject it and keep it in the spurious pool.
+        match = self._match(["alpha beta gamma delta epsilon zeta eta theta"],
+                            ["alpha beta gamma", "zzzzzzzz qqqqqqq"])
+        matched = [m for m in match if m["gt_idx"] != [""]]
+        spurious = [m for m in match if m["gt_idx"] == [""]]
+        assert len(matched) == 1 and matched[0]["pred_idx"] == [0]
+        assert len(spurious) == 1 and spurious[0]["pred_idx"] == [1]
+
+
+# ===========================================================================
 # 6. Paragraph-segmentation sensitivity of quick_match
 # ===========================================================================
 class TestParagraphSegmentationSensitivity:

@@ -145,6 +145,32 @@ Notes:
   and pinned by `TestParagraphSegmentationSensitivity`; fixing it needs
   boundary repair or alignment-based matching (see follow-ups).
 
+### 3.5 Fix: orphan adoption for anchor-preempted merges
+`src/core/matching/match_quick.py`
+
+`deal_with_truncated` anchors any GT/pred pair scoring < 0.25 **before**
+evaluating merges. A prediction covering most of a GT element therefore locks
+in immediately, and the leftover fragment is stranded as spurious — e.g. GT
+title `"Article 16 Currency conversion and remittance of earnings"` predicted
+as two lines (`"Article 16"` / body) scored 0.18 with the prefix flagged as
+18% hallucinated, despite the prediction containing 100% of the correct text.
+This bites whenever a multiline title/paragraph is one element in GT but the
+model emits it with paragraph breaks (`\n\n`), since `md_tex_filter` splits
+predictions on blank lines.
+
+`adopt_adjacent_unmatched_preds` runs after `merge_duplicates_add_unmatched`:
+an unmatched pred that directly neighbors a matched entry's pred span (in
+reading order) is absorbed when (a) it genuinely occurs inside the entry's GT
+text (fuzzy-substring distance < `ORPHAN_ADOPTION_MAX_FRAGMENT_DIST`, 0.4 —
+tolerant of OCR noise) and (b) adopting it improves the entry's normalized
+edit distance by at least `ORPHAN_ADOPTION_MIN_GAIN` (0.02). The content test
+(a) is what keeps garbage out: coincidental character overlaps can clear the
+gain margin, but hallucinated text never fits as a substring of the GT, so it
+stays in the spurious pool.
+
+The title case now scores 0.0 with zero spurious characters. Demo-set
+headline numbers are unchanged (no anchor-preempted pages there).
+
 ## 4. Tests
 `tests/test_edit_distance.py` (run: `python -m pytest tests/test_edit_distance.py -v`)
 

@@ -1112,6 +1112,7 @@ def match_gt2pred_quick(gt_items, pred_items, line_type, img_name, truncated_tim
     # print(converted_results)
     
     merged_results = merge_duplicates_add_unmatched(converted_results, no_ignores_gt_lines, no_ignores_pred_lines, no_ignores_ori_gt_lines, no_ignores_ori_pred_lines, no_ignores_gt_indices, no_ignores_pred_indices)
+    merged_results = adopt_adjacent_unmatched_preds(merged_results, no_ignores_gt_lines, no_ignores_pred_lines)
 
     for entry in merged_results:
         if entry['gt_idx'] != [""]:
@@ -1290,6 +1291,106 @@ def merge_duplicates_add_unmatched(converted_results, norm_gt_lines, norm_pred_l
     return merged_results
 
 
+
+
+# Minimum normalized-edit improvement required for a matched entry to adopt an
+# adjacent unmatched prediction. Legitimate re-attachments (a split-off title
+# prefix, a stray heading line) improve the edit dramatically; padding a short
+# match with garbage can at best roughly break even, so a small positive
+# margin keeps hallucinations from being laundered into matches.
+ORPHAN_ADOPTION_MIN_GAIN = 0.02
+
+# An orphan must also genuinely occur inside the GT content to be adopted:
+# its best fuzzy-substring distance against the entry's GT text must be below
+# this. This is a content test, not a length test - lucky single-character
+# overlaps in garbage can clear the gain margin, but garbage never fits as a
+# substring of the GT. Same scale as the fuzzy_match_unmatched_items gate.
+ORPHAN_ADOPTION_MAX_FRAGMENT_DIST = 0.4
+
+
+def adopt_adjacent_unmatched_preds(merged_results, norm_gt_lines, norm_pred_lines):
+    """Let matched entries absorb adjacent unmatched predictions when that
+    clearly improves their edit distance.
+
+    deal_with_truncated anchors any GT/pred pair scoring < 0.25 BEFORE
+    evaluating merges, so a prediction covering most of a GT element (e.g. the
+    body of a title whose "Article 16" prefix was emitted as its own line)
+    locks in immediately and the leftover fragment is stranded as spurious,
+    even though merging it would make the match near-perfect. This pass
+    re-attaches such fragments: an unmatched pred that directly neighbors a
+    matched entry's pred span (compact index +-1, i.e. reading order) is
+    adopted when it reduces that entry's normalized edit distance by at least
+    ORPHAN_ADOPTION_MIN_GAIN. Genuine hallucinations never improve the edit
+    distance, so they remain unmatched and keep feeding the spurious
+    diagnostic.
+    """
+    blob_entries = [
+        entry for entry in merged_results
+        if entry.get('gt_idx') == [""]
+        and isinstance(entry.get('pred_idx'), list)
+        and entry['pred_idx']
+        and all(isinstance(idx, int) for idx in entry['pred_idx'])
+    ]
+    if not blob_entries:
+        return merged_results
+
+    matched_entries = [
+        entry for entry in merged_results
+        if entry.get('gt_idx') not in ([""], "")
+        and isinstance(entry.get('pred_idx'), list)
+        and entry['pred_idx']
+        and all(isinstance(idx, int) for idx in entry['pred_idx'])
+    ]
+    if not matched_entries:
+        return merged_results
+
+    def entry_gt_norm(entry):
+        gt_indices = entry['gt_idx'] if isinstance(entry['gt_idx'], list) else [entry['gt_idx']]
+        return ''.join(norm_gt_lines[idx] for idx in gt_indices if isinstance(idx, int))
+
+    def span_edit(gt_norm, pred_indices):
+        pred_norm = ''.join(norm_pred_lines[idx] for idx in pred_indices)
+        if not gt_norm and not pred_norm:
+            return 0.0
+        if not gt_norm or not pred_norm:
+            return 1.0
+        return Levenshtein_distance(gt_norm, pred_norm) / max(len(gt_norm), len(pred_norm))
+
+    for blob in blob_entries:
+        orphan_indices = sorted(blob['pred_idx'])
+        adopted_any = True
+        while adopted_any and orphan_indices:
+            adopted_any = False
+            best_adoption = None
+            for orphan_idx in orphan_indices:
+                for entry in matched_entries:
+                    current_indices = sorted(entry['pred_idx'])
+                    if orphan_idx + 1 not in current_indices and orphan_idx - 1 not in current_indices:
+                        continue
+                    gt_norm = entry_gt_norm(entry)
+                    if not gt_norm:
+                        continue
+                    fragment_fit = sub_pred_fuzzy_matching(gt_norm, norm_pred_lines[orphan_idx])
+                    if fragment_fit is False or fragment_fit >= ORPHAN_ADOPTION_MAX_FRAGMENT_DIST:
+                        continue
+                    current_edit = span_edit(gt_norm, current_indices)
+                    adopted_indices = sorted(current_indices + [orphan_idx])
+                    adopted_edit = span_edit(gt_norm, adopted_indices)
+                    gain = current_edit - adopted_edit
+                    if gain >= ORPHAN_ADOPTION_MIN_GAIN and (best_adoption is None or gain > best_adoption[0]):
+                        best_adoption = (gain, orphan_idx, entry, adopted_indices, adopted_edit)
+            if best_adoption is not None:
+                _, orphan_idx, entry, adopted_indices, adopted_edit = best_adoption
+                entry['pred_idx'] = adopted_indices
+                entry['edit'] = adopted_edit
+                orphan_indices.remove(orphan_idx)
+                adopted_any = True
+        blob['pred_idx'] = orphan_indices
+
+    return [
+        entry for entry in merged_results
+        if not (entry.get('gt_idx') == [""] and entry.get('pred_idx') == [])
+    ]
 
 
 def formula_format(formula_matches, img_name):
