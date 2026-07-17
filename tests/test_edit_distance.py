@@ -213,8 +213,10 @@ class TestSpuriousPredDiagnostic:
         # method uses no instance state, so an unbound call with self=None is fine
         rec = End2EndDataset._build_spurious_pred_record(None, match, "p.jpg")
         assert rec["img_id"] == "p.jpg"
-        assert rec["pred_chars"] == 17
-        assert rec["spurious_chars"] == 6
+        assert rec["unit"] == "chars"
+        # call_Spurious_pred reads only these unit-neutral fields
+        assert rec["total_amount"] == 17
+        assert rec["spurious_amount"] == 6
 
     def test_record_builder_norm_pred_is_actually_normalized(self):
         # Regression: 'pred' and 'norm_pred' must NOT collapse to the same raw
@@ -231,41 +233,29 @@ class TestSpuriousPredDiagnostic:
         assert rec["pred"] != rec["norm_pred"]
         assert "*" not in rec["norm_pred"]
 
-    def test_record_builder_norm_pred_length_matches_spurious_chars(self):
-        # The displayed norm_pred string must be consistent with the counts
-        # aggregated into spurious_chars / spurious_amount (no separator
-        # padding, no drift between what's counted and what's shown).
+    def test_record_builder_norm_pred_length_matches_spurious_amount(self):
+        # The displayed norm_pred string must be consistent with the count
+        # aggregated into spurious_amount (no separator padding, no drift
+        # between what's counted and what's shown).
         from src.dataset.end2end_dataset import End2EndDataset
         match = [
             {"gt_idx": [""], "pred": "foo bar", "norm_pred": "foobar"},
             {"gt_idx": [""], "pred": "**baz**", "norm_pred": "baz"},
         ]
         rec = End2EndDataset._build_spurious_pred_record(None, match, "p.jpg")
-        assert len(rec["norm_pred"]) == rec["spurious_chars"] == 9
+        assert len(rec["norm_pred"]) == rec["spurious_amount"] == 9
 
     def test_record_builder_returns_empty_when_no_predictions(self):
         from src.dataset.end2end_dataset import End2EndDataset
         match = [{"gt_idx": [0], "norm_pred": "", "pred": ""}]
         assert End2EndDataset._build_spurious_pred_record(None, match, "p.jpg") == {}
 
-    def test_record_builder_emits_unit_neutral_amounts(self):
-        from src.dataset.end2end_dataset import End2EndDataset
-        match = [
-            {"gt_idx": [0], "norm_pred": "matchedpred", "pred": "matchedpred"},
-            {"gt_idx": [""], "norm_pred": "halluc", "pred": "halluc"},
-        ]
-        rec = End2EndDataset._build_spurious_pred_record(None, match, "p.jpg")
-        # the metric consumes the unit-neutral fields (here: characters)
-        assert rec["spurious_amount"] == rec["spurious_chars"] == 6
-        assert rec["total_amount"] == rec["pred_chars"] == 17
-
     def test_table_record_builder_counts_spurious_tables(self):
         from src.dataset.end2end_dataset import End2EndDataset
         # 3 predicted tables, 1 matched a GT table -> 2 spurious
         rec = End2EndDataset._build_spurious_table_record(None, 3, 1, "p.jpg")
         assert rec["img_id"] == "p.jpg"
-        assert rec["pred_tables"] == 3
-        assert rec["spurious_tables"] == 2
+        assert rec["unit"] == "tables"
         assert rec["total_amount"] == 3
         assert rec["spurious_amount"] == 2
 

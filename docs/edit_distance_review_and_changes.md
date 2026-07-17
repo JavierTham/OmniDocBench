@@ -88,8 +88,9 @@ additively rather than change what the headline metrics penalize.
   Edit_dist / TEDS / CDM scores are **unchanged** (verified: 0 `gt`-less entries
   leak into `text_block`).
 - `End2EndDataset._build_spurious_pred_record` builds a per-page record from the
-  text-mixing matcher output: `spurious_chars` (normalized chars in predictions
-  matching no GT line) and `pred_chars` (all normalized predicted chars).
+  text-mixing matcher output: `spurious_amount` (normalized chars in
+  predictions matching no GT line) and `total_amount` (all normalized
+  predicted chars), tagged `'unit': 'chars'`.
 - New sample category `spurious_pred`; new metric `Spurious_pred`.
 
 ### 3.3 Feature: spurious-prediction diagnostic — tables
@@ -97,15 +98,20 @@ additively rather than change what the headline metrics penalize.
 `configs/end2end.yaml`
 
 - Tables are discrete, so the table diagnostic is **count-based**:
-  `spurious_tables / pred_tables` per page.
+  `spurious_amount / total_amount` (table counts, tagged `'unit': 'tables'`)
+  per page.
 - `End2EndDataset._build_spurious_table_record` counts matched vs. total
   predicted tables per page.
 - New sample category `spurious_table`, scored by the same `Spurious_pred`
   metric.
-- `call_Spurious_pred` was generalized to read **unit-neutral** fields
-  (`spurious_amount` / `total_amount`) so one metric serves both the char-based
-  text diagnostic and the count-based table diagnostic. Result keys:
-  `page_avg`, `weighted`, `spurious_total`, `total`.
+- `call_Spurious_pred` reads **unit-neutral** fields (`spurious_amount` /
+  `total_amount`) so one metric serves both the char-based text diagnostic
+  and the count-based table diagnostic; a `unit` field on each record
+  documents which. Result keys: `page_avg`, `weighted`, `spurious_total`,
+  `total`.
+  (Both record builders originally also stored category-named duplicates —
+  `pred_chars`/`spurious_chars`, `pred_tables`/`spurious_tables` — that no
+  code ever read; these were removed in favor of the `unit` field.)
 - Headline table TEDS / Edit_dist unchanged (verified: 0 `gt`-less entries leak
   into the `table` category).
 
@@ -188,8 +194,9 @@ Demo-set sanity check (18 pages):
 - **Coverage.** The text diagnostic covers the text-mixing path (text + inline /
   isolated equations). Standalone display-formula hallucinations are **not yet**
   counted — a `spurious_formula` category would be the natural next step.
-- **Table denominator.** `pred_tables` counts tables routed through the table
-  matcher (predicted HTML tables + LaTeX tables converted to HTML). Markdown
+- **Table denominator.** `total_amount` on `spurious_table` records counts
+  tables routed through the table matcher (predicted HTML tables + LaTeX
+  tables converted to HTML). Markdown
   tables that were converted upstream are included via that conversion;
   anything not classified as a table by `md_tex_filter` is out of scope.
 - **The diagnostics are not yet in the run-summary / notebook tables.**

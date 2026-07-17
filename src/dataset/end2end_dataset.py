@@ -295,9 +295,8 @@ class End2EndDataset():
             'pred': spurious_raw_text,
             'norm_pred': spurious_norm_text,
             'gt_attribute': [{}],
-            'spurious_chars': spurious_chars,
-            'pred_chars': pred_chars,
-            # unit-neutral fields consumed by call_Spurious_pred (here: characters)
+            'unit': 'chars',
+            # unit-neutral fields consumed by call_Spurious_pred
             'spurious_amount': spurious_chars,
             'total_amount': pred_chars,
         }
@@ -320,9 +319,8 @@ class End2EndDataset():
             'pred': '',
             'norm_pred': '',
             'gt_attribute': [{}],
-            'spurious_tables': spurious_tables,
-            'pred_tables': pred_table_count,
-            # unit-neutral fields consumed by call_Spurious_pred (here: table counts)
+            'unit': 'tables',
+            # unit-neutral fields consumed by call_Spurious_pred
             'spurious_amount': spurious_tables,
             'total_amount': pred_table_count,
         }
