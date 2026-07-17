@@ -216,6 +216,33 @@ class TestSpuriousPredDiagnostic:
         assert rec["pred_chars"] == 17
         assert rec["spurious_chars"] == 6
 
+    def test_record_builder_norm_pred_is_actually_normalized(self):
+        # Regression: 'pred' and 'norm_pred' must NOT collapse to the same raw
+        # string. norm_pred should reflect each item's already-normalized text
+        # (markdown/punctuation stripped), not a copy of the raw markdown pred.
+        from src.dataset.end2end_dataset import End2EndDataset
+        match = [
+            {"gt_idx": [""], "pred": "**hallucinated** *markdown*",
+             "norm_pred": "hallucinatedmarkdown"},
+        ]
+        rec = End2EndDataset._build_spurious_pred_record(None, match, "p.jpg")
+        assert rec["pred"] == "**hallucinated** *markdown*"      # raw, markdown intact
+        assert rec["norm_pred"] == "hallucinatedmarkdown"        # normalized, no '*'
+        assert rec["pred"] != rec["norm_pred"]
+        assert "*" not in rec["norm_pred"]
+
+    def test_record_builder_norm_pred_length_matches_spurious_chars(self):
+        # The displayed norm_pred string must be consistent with the counts
+        # aggregated into spurious_chars / spurious_amount (no separator
+        # padding, no drift between what's counted and what's shown).
+        from src.dataset.end2end_dataset import End2EndDataset
+        match = [
+            {"gt_idx": [""], "pred": "foo bar", "norm_pred": "foobar"},
+            {"gt_idx": [""], "pred": "**baz**", "norm_pred": "baz"},
+        ]
+        rec = End2EndDataset._build_spurious_pred_record(None, match, "p.jpg")
+        assert len(rec["norm_pred"]) == rec["spurious_chars"] == 9
+
     def test_record_builder_returns_empty_when_no_predictions(self):
         from src.dataset.end2end_dataset import End2EndDataset
         match = [{"gt_idx": [0], "norm_pred": "", "pred": ""}]

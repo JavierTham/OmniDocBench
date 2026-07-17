@@ -278,16 +278,22 @@ class End2EndDataset():
 
         spurious_items = [item for item in match if item.get('gt_idx') == [""]]
         spurious_chars = sum(_norm_pred_len(item) for item in spurious_items)
-        spurious_text = ' '.join(
+        # raw text for human inspection: joined with spaces, markdown intact
+        spurious_raw_text = ' '.join(
             str(item.get('pred', '') or '') for item in spurious_items if item.get('pred')
+        )
+        # normalized text: joined from each item's own norm_pred with no
+        # separator, so len(spurious_norm_text) == spurious_chars exactly
+        spurious_norm_text = ''.join(
+            str(item.get('norm_pred', '') or '') for item in spurious_items
         )
 
         return {
             'img_id': img_name,
             'gt': '',
             'norm_gt': '',
-            'pred': spurious_text,
-            'norm_pred': spurious_text,
+            'pred': spurious_raw_text,
+            'norm_pred': spurious_norm_text,
             'gt_attribute': [{}],
             'spurious_chars': spurious_chars,
             'pred_chars': pred_chars,
